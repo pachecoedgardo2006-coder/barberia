@@ -4,15 +4,45 @@ from tkinter import messagebox, ttk
 from datetime import datetime
 import os
 
+
+   # Nueva configuración de precios y repartición
+SERVICIOS_CONFIG = {
+        "Corte Caballero": {
+            "precio": 30000, "barbero": 15000, "lavado": 2000, "local": 13000
+        },
+        "Corte de Niño": {
+            "precio": 25000, "barbero": 12000, "lavado": 2000, "local": 11000
+        },
+        "Barba + Tinte": {
+            "precio": 30000, "barbero": 10000, "lavado": 0, "local": 20000
+        },
+        "Barba Premium": {
+            "precio": 15000, "barbero": 5000, "lavado": 0, "local": 10000
+        },
+        "Combo Corte + Barba": {
+            "precio": 40000, "barbero": 18000, "lavado": 2000, "local": 20000
+        },
+        "Cejas / Marcación": {
+            "precio": 15000, "barbero": 5000, "lavado": 0, "local": 10000
+        },
+        "Combo Barba Premium + Cejas": {
+            "precio": 27000, "barbero": 12000, "lavado": 0, "local": 15000
+        },
+        "Combo Corte Niño + Diseño": {
+            "precio": 30000, "barbero": 15000, "lavado": 2000, "local": 13000
+        }
+    }
+
 # --- CONFIGURACIÓN GLOBAL ---
 BARBEROS = ["Edward","Invitado"]
-COLOR_CAJA = "#2fa572"
+COLOR_CAJA = "#535353"
 COLOR_BARBERO = "#3b8ed0"
 COLOR_LOCAL = "#e5a823"
 
 def create_db():
     conn = sqlite3.connect("barberia.db")
     cursor = conn.cursor()
+    # Creamos la tabla si no existe con la estructura completa
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,12 +51,24 @@ def create_db():
             price REAL NOT NULL,
             comision_barbero REAL NOT NULL,
             comision_empresa REAL NOT NULL,
+            lavado_cabezal REAL DEFAULT 0,
             date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             cliente_nombre TEXT DEFAULT '',
             cliente_documento TEXT DEFAULT '', 
             ticket_text TEXT DEFAULT '' 
         )
     ''')
+    
+    # Truco de seguridad: Verificamos si las columnas nuevas existen 
+    # (por si vienes de una versión muy vieja del script)
+    cursor.execute("PRAGMA table_info(sales)")
+    columns = [column[1] for column in cursor.fetchall()]
+    
+    if 'cliente_documento' not in columns:
+        cursor.execute('ALTER TABLE sales ADD COLUMN cliente_documento TEXT DEFAULT ""')
+    if 'ticket_text' not in columns:
+        cursor.execute('ALTER TABLE sales ADD COLUMN ticket_text TEXT DEFAULT ""')
+        
     conn.commit()
     conn.close()
 
@@ -48,20 +90,44 @@ def save_sale_to_db(name, barber, price, cliente_nombre=""):
 
 def save_venta_completa(items, barber, cliente_nombre="", cliente_documento="", ticket_text=""):
     nombres = " + ".join(i["nombre"] for i in items)
-    total = sum(i["precio"] for i in items)
-    c_barbero = total * 0.60
-    c_empresa = total * 0.40
+    total_venta = sum(i["precio"] for i in items)
+    
+    # Inicializamos los contadores en cero
+    total_barbero = 0
+    total_lavado = 0
+    total_local = 0
+    
+    # RECORREMOS CADA ITEM PARA SUMAR SUS VALORES ESPECÍFICOS
+    for item in items:
+        nombre_servicio = item["nombre"]
+        # Buscamos el servicio en nuestra nueva configuración
+        if nombre_servicio in SERVICIOS_CONFIG:
+            datos = SERVICIOS_CONFIG[nombre_servicio]
+            total_barbero += datos["barbero"]
+            total_lavado += datos["lavado"]
+            total_local += datos["local"]
+    
     fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
     try:
         conn = sqlite3.connect("barberia.db")
         cursor = conn.cursor()
-        cursor.execute('''INSERT INTO sales (service_name, barber_name, price, comision_barbero, comision_empresa, date, cliente_nombre, cliente_documento, ticket_text) 
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                       (nombres, barber, total, c_barbero, c_empresa, fecha_actual, cliente_nombre, cliente_documento, ticket_text))
+        # Insertamos los valores exactos que sumamos arriba
+        cursor.execute('''INSERT INTO sales (
+                            service_name, barber_name, price, 
+                            comision_barbero, comision_empresa, lavado_cabezal, 
+                            date, cliente_nombre, cliente_documento, ticket_text
+                          ) 
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                       (nombres, barber, total_venta, 
+                        total_barbero, total_local, total_lavado, 
+                        fecha_actual, cliente_nombre, cliente_documento, ticket_text))
         conn.commit()
         conn.close()
         return True
-    except: return False
+    except Exception as e:
+        print(f"Error al guardar: {e}")
+        return False
 
 def delete_sale(sale_id):
     try:
@@ -154,12 +220,12 @@ def open_history_window(rol):
     table_frame = ctk.CTkFrame(history_win)
     table_frame.pack(expand=True, fill="both", padx=20, pady=10)
 
-    columns = ("id", "servicio", "barbero", "total", "com_barbero", "empresa", "hora")
+    columns = ("id", "servicio", "barbero", "total", "com_barbero", "empresa","lavados", "hora")
     tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
     
     for col in columns:
         tree.heading(col, text=col.upper())
-        tree.column(col, width=100, anchor="center")
+        tree.column(col, width=90, anchor="center")
     
     tree.pack(side="left", expand=True, fill="both")
 
@@ -176,6 +242,9 @@ def open_history_window(rol):
     lbl_local = ctk.CTkLabel(summary_frame, text="Local: $0", font=("Arial", 14), text_color=COLOR_CAJA)
     lbl_local.pack(side="left", padx=20)
 
+    lbl_lavados = ctk.CTkLabel(summary_frame, text="Lavados Admin: $0", font=("Arial", 14), text_color="#2ecc71")
+    lbl_lavados.pack(side="left", padx=20)
+
     # --- LÓGICA INTERNA ---
     def actualizar_tabla(*args):
         for item in tree.get_children(): tree.delete(item)
@@ -190,11 +259,15 @@ def open_history_window(rol):
             params.append(barber)
             
         cursor.execute(query, params)
-        t_b = t_bar = t_loc = 0
+        t_b = t_bar = t_loc = t_lav = 0
         for row in cursor.fetchall():
-            t_b += row[3]; t_bar += row[4]; t_loc += row[5]
-            hora = row[6].split(" ")[1] if " " in row[6] else "00:00"
-            tree.insert("", "end", values=(row[0], row[1], row[2], f"${row[3]:,.0f}", f"${row[4]:,.0f}", f"${row[5]:,.0f}", hora))
+            t_b += row[3]; t_bar += row[4]; t_loc += row[5]; t_lav += row[6]
+            hora = row[7].split(" ")[1] if " " in row[7] else "00:00"
+            tree.insert("", "end", values=(row[0], row[1], row[2], f"${row[3]:,.0f}", 
+                                       f"${row[4]:,.0f}", f"${row[5]:,.0f}", 
+                                       f"${row[6]:,.0f}", hora))
+        # Actualiza el texto del label que creamos arriba
+        lbl_lavados.configure(text=f"Lavados Admin\n${t_lav:,.0f}")
         conn.close()
         
         lbl_total.configure(text=f"Total Rango\n${t_b:,.0f}")
@@ -280,14 +353,6 @@ def main_window():
     barber_selector = ctk.CTkOptionMenu(select_frame, values=BARBEROS, width=300, height=38, font=("Arial", 13))
     barber_selector.pack(pady=4)
 
-    servicios = {
-        "✂️ Corte Caballero": 30000,
-        "💇 Corte Niño": 25000,
-        "🧔 Barba Premium": 15000,
-        "Barba + Tinte": 22000,
-        "🔥 Combo Corte + Barba": 40000,
-        "✏️ Cejas / Marcación": 15000,
-    }
 
     carrito = []
 
@@ -396,18 +461,29 @@ def main_window():
             txt.configure(state="disabled")
             ctk.CTkButton(t, text="Cerrar", command=t.destroy, width=120).pack(pady=5)
 
-    # --- BOTONES DE SERVICIOS ---
+# --- BOTONES DE SERVICIOS (Generados Automáticamente) ---
     frame_btns = ctk.CTkFrame(main_scroll, fg_color="#2b2b2b", corner_radius=15)
     frame_btns.pack(pady=8, padx=30, fill="x")
-    ctk.CTkLabel(frame_btns, text="SERVICIOS", font=("Arial", 13, "bold"), text_color="#aaaaaa").pack(pady=4)
-    for n, p in servicios.items():
-        ctk.CTkButton(frame_btns, text=f"{n}  (${p:,.0f})",
-                      command=lambda n=n, p=p: agregar_al_carrito(n, p),
-                      height=40, font=("Arial", 12, "bold"),
-                      fg_color="#3b3b3b", hover_color="#4b4b4b").pack(pady=3, padx=15, fill="x")
+    
+    ctk.CTkLabel(frame_btns, text="SERVICIOS DISPONIBLES", 
+                 font=("Arial", 13, "bold"), text_color="#aaaaaa").pack(pady=4)
+
+    # Ahora recorremos nuestra nueva SERVICIOS_CONFIG
+    for nombre, datos in SERVICIOS_CONFIG.items():
+        precio_total = datos["precio"]
+        ctk.CTkButton(
+            frame_btns, 
+            text=f"{nombre} (${precio_total:,.0f})",
+            # Al hacer clic, pasamos el nombre y el precio al carrito
+            command=lambda n=nombre, p=precio_total: agregar_al_carrito(n, p),
+            height=40, 
+            font=("Arial", 12, "bold"),
+            fg_color="#3b3b3b", 
+            hover_color="#4b4b4b"
+        ).pack(pady=3, padx=15, fill="x")
 
     # --- CARRITO ---
-    frame_carrito = ctk.CTkFrame(main_scroll, fg_color="#1a2e1a", corner_radius=10)
+    frame_carrito = ctk.CTkFrame(main_scroll, fg_color="#000000", corner_radius=10)
     frame_carrito.pack(pady=6, padx=30, fill="x")
     ctk.CTkLabel(frame_carrito, text="🧾 Venta en curso",
                  font=("Arial", 12, "bold"), text_color="#aaaaaa").pack(pady=(6, 2))
@@ -423,7 +499,7 @@ def main_window():
     # --- BOTONES DE ACCIÓN FINAL (Dentro del scroll para asegurar visibilidad) ---
     btn_finalizar = ctk.CTkButton(main_scroll, text="✅ FINALIZAR VENTA Y GENERAR TICKET",
                                   command=finalizar_venta,
-                                  fg_color=COLOR_CAJA, hover_color="#1e7a52",
+                                  fg_color=COLOR_CAJA, hover_color="#000000",
                                   height=52, font=("Arial", 13, "bold"), state="disabled")
     btn_finalizar.pack(pady=6, padx=30, fill="x")
 
